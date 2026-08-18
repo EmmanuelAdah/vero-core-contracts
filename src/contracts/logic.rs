@@ -11,6 +11,21 @@ use soroban_sdk::{Address, Env, Map, Vec};
 /// Attempts to release funds from the vault. If the vault call fails, the failure
 /// is logged via an event but does not revert the transaction. This ensures task
 /// resolution is not blocked by a broken vault.
+///
+/// # Parameters
+/// * `env` - The execution environment.
+/// * `task_id` - The ID of the task to release funds for.
+/// * `vault_addr` - The address of the vault contract.
+///
+/// # Returns
+/// * No return value.
+///
+/// # Errors
+/// * Does not return errors; vault failures are caught and logged.
+///
+/// # Side Effects
+/// * Calls the external vault contract to try to release funds.
+/// * Emits a vault release success or failure event.
 pub(crate) fn try_release_vault_funds(env: &Env, task_id: u64, vault_addr: &Address) {
     // Use the generated try_release_funds method from VaultClient
     // This will not panic on failure - it returns a Result
@@ -51,6 +66,26 @@ pub(crate) const MAX_SNAPSHOT_COLLECTION_SIZE: u32 = 200;
 /// cost bounded even against a hostile/misconfigured caller.
 pub(crate) const MAX_PAGE_LIMIT: u32 = 50;
 
+/// Locks a specified amount of tokens for a guardian to participate in consensus.
+///
+/// # Parameters
+/// * `env` - The execution environment.
+/// * `guardian` - The address of the guardian locking tokens.
+/// * `amount` - The amount of tokens to lock.
+///
+/// # Returns
+/// * `Ok(())` if the tokens were successfully locked.
+///
+/// # Errors
+/// * `ContractError::NotInitialized` if the token address is not set.
+/// * Propagates circuit breaker errors if the contract is paused.
+///
+/// # Side Effects
+/// * Requires authentication from the `guardian`.
+/// * Transfers `amount` (minus calculated fees) from the `guardian` to the contract.
+/// * If fees are configured, transfers the fee portion directly to the treasury.
+/// * Updates the `LockedBalance` in instance storage.
+/// * Emits a `TokensLocked` event.
 pub(crate) fn lock_tokens(env: &Env, guardian: Address, amount: i128) -> Result<(), ContractError> {
     circuit_breaker::require_not_paused(env)?;
     guardian.require_auth();
@@ -87,6 +122,22 @@ pub(crate) fn lock_tokens(env: &Env, guardian: Address, amount: i128) -> Result<
     Ok(())
 }
 
+/// Initiates the timelock withdrawal process for a guardian's locked tokens.
+///
+/// # Parameters
+/// * `env` - The execution environment.
+/// * `guardian` - The address of the guardian requesting the unlock.
+///
+/// # Returns
+/// * `Ok(())` on success.
+///
+/// # Errors
+/// * Propagates circuit breaker errors if the contract is paused.
+///
+/// # Side Effects
+/// * Requires authentication from the `guardian`.
+/// * Records a timelock entry in storage for the guardian.
+/// * Emits a `TimelockStarted` event.
 pub(crate) fn request_unlock(env: &Env, guardian: Address) -> Result<(), ContractError> {
     circuit_breaker::require_not_paused(env)?;
     guardian.require_auth();
@@ -95,6 +146,26 @@ pub(crate) fn request_unlock(env: &Env, guardian: Address) -> Result<(), Contrac
     Ok(())
 }
 
+/// Withdraws locked tokens for a guardian after their timelock has expired.
+///
+/// # Parameters
+/// * `env` - The execution environment.
+/// * `guardian` - The address of the guardian withdrawing tokens.
+///
+/// # Returns
+/// * `Ok(())` on success.
+///
+/// # Errors
+/// * `ContractError::StillGuardian` if the address is still listed as an active guardian.
+/// * `ContractError::NotInitialized` if the token address is missing.
+/// * Propagates errors if the contract is paused or the timelock hasn't expired.
+///
+/// # Side Effects
+/// * Requires authentication from the `guardian`.
+/// * Clears the locked balance and timelock state in storage.
+/// * Transfers the locked tokens (minus fees) back to the `guardian`.
+/// * Transfers fee portions to the treasury, if configured.
+/// * Emits a `TokensUnlocked` event.
 pub(crate) fn unlock_tokens(env: &Env, guardian: Address) -> Result<(), ContractError> {
     circuit_breaker::require_not_paused(env)?;
     guardian.require_auth();
@@ -142,6 +213,24 @@ pub(crate) fn unlock_tokens(env: &Env, guardian: Address) -> Result<(), Contract
     Ok(())
 }
 
+/// Recovers tokens from the contract to a specified recipient during emergencies.
+///
+/// # Parameters
+/// * `env` - The execution environment.
+/// * `admin` - The address of the admin initiating the recovery.
+/// * `recipient` - The address receiving the recovered tokens.
+/// * `amount` - The amount of tokens to recover.
+///
+/// # Returns
+/// * `Ok(())` on success.
+///
+/// # Errors
+/// * `ContractError::NotInitialized` if the token address is missing.
+/// * Propagates errors if address or token amount validation fails.
+///
+/// # Side Effects
+/// * Transfers `amount` of tokens from the contract to the `recipient`.
+/// * Emits an `EmergencyRecovery` event.
 pub(crate) fn emergency_recover(
     env: &Env,
     admin: Address,
@@ -163,6 +252,26 @@ pub(crate) fn emergency_recover(
     Ok(())
 }
 
+/// Resigns a guardian and returns their locked tokens if the timelock has expired.
+///
+/// # Parameters
+/// * `env` - The execution environment.
+/// * `guardian` - The address of the resigning guardian.
+///
+/// # Returns
+/// * `Ok(())` on success.
+///
+/// # Errors
+/// * `ContractError::NotGuardian` if the address is not currently an active guardian.
+/// * `ContractError::NotInitialized` if the token address is missing.
+/// * Propagates errors if the contract is paused or the timelock has not expired.
+///
+/// # Side Effects
+/// * Requires authentication from the `guardian`.
+/// * Removes the guardian from active storage.
+/// * Clears the locked balance and timelock in storage.
+/// * Transfers locked tokens (minus fees) back to the `guardian`.
+/// * Emits a `GuardianResigned` event.
 pub(crate) fn resign_guardian(env: &Env, guardian: Address) -> Result<(), ContractError> {
     circuit_breaker::require_not_paused(env)?;
     guardian.require_auth();
@@ -212,6 +321,34 @@ pub(crate) fn resign_guardian(env: &Env, guardian: Address) -> Result<(), Contra
     Ok(())
 }
 
+/// Processes a single task vote from a guardian.
+///
+/// # Parameters
+/// * `env` - The execution environment.
+/// * `guardian` - The address of the voting guardian.
+/// * `task_id` - The ID of the task being voted on.
+///
+/// # Returns
+/// * `Ok(())` on success.
+///
+/// # Errors
+/// * `ContractError::NotAuthorized` if the address is not an active guardian.
+/// * `ContractError::NotInitialized` if the token address is missing.
+/// * `ContractError::InsufficientLockedBalance` if the locked balance is below the required threshold.
+/// * `ContractError::DuplicateVote` if the guardian already voted on this task.
+/// * `ContractError::ZeroWeightVote` if the guardian has 0 reputation weight.
+/// * `ContractError::TaskNotFound` if the task does not exist.
+/// * `ContractError::TaskCancelled` if the task is cancelled.
+/// * `ContractError::WeightOverflow` if weight accumulation overflows.
+/// * Propagates pause and reentrancy errors.
+///
+/// # Side Effects
+/// * Requires authentication from the `guardian`.
+/// * Acquires and subsequently releases a reentrancy lock.
+/// * Updates task consensus state (`total_weight_accrued`, `votes`, `is_done`) in storage.
+/// * Appends the guardian to the task voter list and updates the user's `Voted` status.
+/// * If the vote resolves the task, attempts to release vault funds and emits a `TaskResolved` event.
+/// * Emits a `WeightedVote` event.
 pub(crate) fn process_vote(
     env: &Env,
     guardian: Address,
@@ -328,6 +465,28 @@ pub(crate) fn process_vote(
 /// Core vote logic without authentication or reentrancy management.
 /// Performs per-task validation and state mutation.
 /// The caller must hold the reentrancy lock and have verified guardian-level checks.
+///
+/// # Parameters
+/// * `env` - The execution environment.
+/// * `guardian` - The address of the voting guardian.
+/// * `task_id` - The ID of the task being voted on.
+/// * `weight` - The voting weight derived from the guardian's reputation.
+///
+/// # Returns
+/// * `Ok(())` on success.
+///
+/// # Errors
+/// * `ContractError::DuplicateVote` if the guardian already voted on this task.
+/// * `ContractError::TaskNotFound` if the task does not exist.
+/// * `ContractError::TaskCancelled` if the task is cancelled.
+/// * `ContractError::ZeroWeightVote` if the vote weight evaluates to 0.
+/// * `ContractError::WeightOverflow` if weight accumulation overflows.
+///
+/// # Side Effects
+/// * Updates the task's consensus state (`total_weight_accrued`, `votes`, `is_done`) in storage.
+/// * Records the guardian in the task's voter list and marks the task as voted.
+/// * If resolved, attempts to release vault funds and emits `TaskResolved`.
+/// * Emits a `WeightedVote` event.
 pub(crate) fn vote_inner(
     env: &Env,
     guardian: &Address,
@@ -400,6 +559,24 @@ pub(crate) fn vote_inner(
 /// performed once. Per-task validation and state mutation uses `vote_inner`.
 /// If any task is invalid the entire batch is reverted (Soroban transactional
 /// semantics ensure atomicity).
+///
+/// # Parameters
+/// * `env` - The execution environment.
+/// * `guardian` - The address of the voting guardian.
+/// * `task_ids` - A vector of task IDs to vote on.
+///
+/// # Returns
+/// * `Ok(())` on success.
+///
+/// # Errors
+/// * Returns the same errors as `process_vote` and `vote_inner`, such as
+///   `ContractError::NotAuthorized`, `ContractError::InsufficientLockedBalance`,
+///   or task-specific errors. Reverts the entire batch if any single vote fails.
+///
+/// # Side Effects
+/// * Requires authentication from the `guardian`.
+/// * Acquires and releases a reentrancy lock.
+/// * Executes the state updates and event emissions of `vote_inner` for each task ID.
 pub(crate) fn process_vote_batch(
     env: &Env,
     guardian: Address,
@@ -457,6 +634,20 @@ pub(crate) fn process_vote_batch(
     Ok(())
 }
 
+/// Generates a comprehensive snapshot of the protocol's current state.
+///
+/// # Parameters
+/// * `env` - The execution environment.
+///
+/// # Returns
+/// * `Ok(Snapshot)` containing the current system state, maps of guardians, tasks, etc.
+///
+/// # Errors
+/// * `ContractError::SnapshotTooLarge` if the number of guardians, tasks, or
+///   reward streams exceeds `MAX_SNAPSHOT_COLLECTION_SIZE`.
+///
+/// # Side Effects
+/// * Performs a large volume of storage reads without modifying state.
 pub(crate) fn get_snapshot(env: &Env) -> Result<Snapshot, ContractError> {
     let timestamp = env.ledger().timestamp();
     let paused = env
@@ -547,6 +738,18 @@ pub(crate) fn get_snapshot(env: &Env) -> Result<Snapshot, ContractError> {
 
 /// O(1) snapshot header (plus collection counts). Always safe to call,
 /// regardless of total protocol size.
+///
+/// # Parameters
+/// * `env` - The execution environment.
+///
+/// # Returns
+/// * `SnapshotMeta` containing global protocol configuration and collection counts.
+///
+/// # Errors
+/// * None.
+///
+/// # Side Effects
+/// * None (read-only state retrieval).
 pub(crate) fn get_snapshot_meta(env: &Env) -> SnapshotMeta {
     SnapshotMeta {
         timestamp: env.ledger().timestamp(),
@@ -593,6 +796,20 @@ pub(crate) fn get_snapshot_meta(env: &Env) -> SnapshotMeta {
 /// and `tests/snapshot_scaling.rs`). Its absolute cost still carries a mild
 /// dependency on total instance-storage size, an inherent property of
 /// Soroban's shared-instance-ledger-entry storage model.
+///
+/// # Parameters
+/// * `env` - The execution environment.
+/// * `offset` - The starting index for pagination.
+/// * `limit` - The maximum number of entries to return.
+///
+/// # Returns
+/// * A `Vec<GuardianEntry>` representing a page of guardians.
+///
+/// # Errors
+/// * None.
+///
+/// # Side Effects
+/// * None (read-only state retrieval).
 pub(crate) fn get_guardians_page(env: &Env, offset: u32, limit: u32) -> Vec<GuardianEntry> {
     let limit = limit.min(MAX_PAGE_LIMIT);
     let count: u32 = env
@@ -632,6 +849,20 @@ pub(crate) fn get_guardians_page(env: &Env, offset: u32, limit: u32) -> Vec<Guar
 /// stays cheaply invokable at task counts where `get_snapshot` is capped out
 /// entirely. See `get_guardians_page` for the same caveat on absolute cost
 /// under Soroban's shared-instance-ledger-entry storage model.
+///
+/// # Parameters
+/// * `env` - The execution environment.
+/// * `offset` - The starting index for pagination.
+/// * `limit` - The maximum number of entries to return.
+///
+/// # Returns
+/// * A `Vec<Task>` representing a page of tasks.
+///
+/// # Errors
+/// * None.
+///
+/// # Side Effects
+/// * None (read-only state retrieval).
 pub(crate) fn get_tasks_page(env: &Env, offset: u32, limit: u32) -> Vec<Task> {
     let limit = limit.min(MAX_PAGE_LIMIT);
     let count: u32 = env
@@ -660,6 +891,20 @@ pub(crate) fn get_tasks_page(env: &Env, offset: u32, limit: u32) -> Vec<Task> {
 
 /// Returns up to `limit` (capped at `MAX_PAGE_LIMIT`) reward streams starting
 /// at `offset`.
+///
+/// # Parameters
+/// * `env` - The execution environment.
+/// * `offset` - The starting index for pagination.
+/// * `limit` - The maximum number of entries to return.
+///
+/// # Returns
+/// * A `Vec<RewardStream>` representing a page of reward streams.
+///
+/// # Errors
+/// * None.
+///
+/// # Side Effects
+/// * None (read-only state retrieval).
 pub(crate) fn get_reward_streams_page(env: &Env, offset: u32, limit: u32) -> Vec<RewardStream> {
     let limit = limit.min(MAX_PAGE_LIMIT);
     let all = drips::get_all_reward_streams(env);
@@ -677,6 +922,22 @@ pub(crate) fn get_reward_streams_page(env: &Env, offset: u32, limit: u32) -> Vec
     page
 }
 
+/// Captures the current snapshot of the protocol and stores it on-chain.
+///
+/// # Parameters
+/// * `env` - The execution environment.
+///
+/// # Returns
+/// * `Ok(())` on success.
+///
+/// # Errors
+/// * Propagates `ContractError::SnapshotTooLarge` if the system state is too large
+///   to safely snapshot.
+///
+/// # Side Effects
+/// * Writes the generated snapshot data to instance storage keyed by the current timestamp.
+/// * Appends the current timestamp to the `AllSnapshots` array in instance storage.
+/// * Emits a `SnapshotRecorded` event.
 pub(crate) fn record_snapshot(env: &Env) -> Result<(), ContractError> {
     let snapshot = get_snapshot(env)?;
     let timestamp = snapshot.timestamp;
