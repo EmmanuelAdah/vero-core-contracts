@@ -960,3 +960,4 @@ pub(crate) fn record_snapshot(env: &Env) -> Result<(), ContractError> {
     Ok(())
 
 }
+
