@@ -958,6 +958,4 @@ pub(crate) fn record_snapshot(env: &Env) -> Result<(), ContractError> {
     events::emit_snapshot_recorded(env, timestamp);
 
     Ok(())
-
 }
-
