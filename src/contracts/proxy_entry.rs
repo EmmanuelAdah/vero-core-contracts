@@ -1607,4 +1607,5 @@ impl VeroContract {
         crate::contracts::rbac::require_role(&env, &admin, crate::types::Role::Admin)?;
         crate::migrate::migrate(&env)
     }
+
 }
