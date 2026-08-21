@@ -5,4 +5,4 @@ lib/
 test_snapshots/
 target/
 Cargo.lock
-.idea/
+.idea/ 
